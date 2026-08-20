@@ -43,7 +43,7 @@ const ADMIN_CREDENTIALS = {
 const STORE_API = '/api/store';
 const ADMIN_API_KEY = ADMIN_CREDENTIALS.password;
 
-type RemoteStore = { categories: Category[]; products: Product[]; settings: Record<string, string>; users?: User[]; topups?: Topup[]; complaints?: Complaint[] };
+type RemoteStore = { categories: Category[]; products: Product[]; settings: Record<string, string> };
 
 async function fetchRemoteStore(): Promise<RemoteStore | null> {
   try {
@@ -51,52 +51,10 @@ async function fetchRemoteStore(): Promise<RemoteStore | null> {
     if (!response.ok) return null;
     const data = await response.json();
     if (!data || !Array.isArray(data.categories) || !Array.isArray(data.products)) return null;
-    return {
-      categories: data.categories,
-      products: data.products,
-      settings: data.settings || {},
-      users: Array.isArray(data.users) ? data.users : undefined,
-      topups: Array.isArray(data.topups) ? data.topups : undefined,
-      complaints: Array.isArray(data.complaints) ? data.complaints : undefined,
-    };
+    return { categories: data.categories, products: data.products, settings: data.settings || {} };
   } catch {
     return null;
   }
-}
-
-async function fetchRemoteOrders(username?: string, admin = false): Promise<Order[]> {
-  try {
-    const params = username && !admin ? `?username=${encodeURIComponent(username)}` : '';
-    const response = await fetch(`/api/orders${params}`, {
-      cache: 'no-store',
-      headers: admin ? { 'X-Admin-Key': ADMIN_API_KEY } : undefined,
-    });
-    if (!response.ok) return [];
-    const data = await response.json();
-    return Array.isArray(data.orders) ? data.orders.map(normalizeOrder) : [];
-  } catch { return []; }
-}
-
-async function createRemoteOrder(order: Order): Promise<boolean> {
-  try {
-    const response = await fetch('/api/orders', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(order),
-    });
-    return response.ok;
-  } catch { return false; }
-}
-
-async function updateRemoteOrder(id: string, status: string): Promise<boolean> {
-  try {
-    const response = await fetch(`/api/orders/${encodeURIComponent(id)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'X-Admin-Key': ADMIN_API_KEY },
-      body: JSON.stringify({ status }),
-    });
-    return response.ok;
-  } catch { return false; }
 }
 
 async function saveRemoteStore(store: RemoteStore): Promise<boolean> {
@@ -168,7 +126,14 @@ const DEFAULT_PRODUCTS: Product[] = [
 function read<T>(key: string, fallback: T): T {
   try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) as T : fallback; } catch { return fallback; }
 }
-function write(key: string, value: unknown) { localStorage.setItem(key, JSON.stringify(value)); }
+function write(key: string, value: unknown) {
+  localStorage.setItem(key, JSON.stringify(value));
+  const map: Record<string, string> = { [KEY.users]: 'users', [KEY.topups]: 'topups', [KEY.complaints]: 'complaints', [KEY.orders]: 'orders' };
+  const collection = map[key];
+  if (collection) {
+    fetch(`/api/data/${collection}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ items: value }) }).catch(() => {});
+  }
+}
 function uid(prefix: string) { return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`; }
 async function hashValue(value: string) {
   const bytes = new TextEncoder().encode(value);
@@ -283,6 +248,22 @@ function App() {
   const [, setLocation] = useLocation();
 
   useEffect(() => {
+    const loadGlobal = async () => {
+      try {
+        const results = await Promise.all(['users','topups','complaints','orders'].map((name) => fetch(`/api/data/${name}`).then((r) => r.ok ? r.json() : { items: null })));
+        const [u,t,c,o] = results.map((r: any) => r.items);
+        if (Array.isArray(u) && u.length) { setUsers(u); localStorage.setItem(KEY.users, JSON.stringify(u)); }
+        if (Array.isArray(t) && t.length) { setTopups(t); localStorage.setItem(KEY.topups, JSON.stringify(t)); }
+        if (Array.isArray(c) && c.length) { setComplaints(c); localStorage.setItem(KEY.complaints, JSON.stringify(c)); }
+        if (Array.isArray(o) && o.length) { setOrders(o); localStorage.setItem(KEY.orders, JSON.stringify(o)); }
+      } catch {}
+    };
+    loadGlobal();
+    const timer = window.setInterval(loadGlobal, 10000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
     if (!localStorage.getItem(KEY.categories)) write(KEY.categories, DEFAULT_CATEGORIES);
     if (!localStorage.getItem(KEY.products)) write(KEY.products, DEFAULT_PRODUCTS);
     if (!localStorage.getItem(KEY.users)) write(KEY.users, []);
@@ -291,132 +272,19 @@ function App() {
     if (!localStorage.getItem(KEY.complaints)) write(KEY.complaints, []);
     if (!localStorage.getItem(KEY.cart)) write(KEY.cart, []);
   }, []);
-  const persistUsers = async (next: User[]) => {
-    const previous = users;
-    const changed = next.filter((u) => {
-      const oldUser = previous.find((p) => p.username === u.username);
-      return !oldUser || JSON.stringify(oldUser) !== JSON.stringify(u);
-    });
-    setUsers(next);
-    write(KEY.users, next);
-    try {
-      await Promise.all(changed.map((user) => fetch('/api/users', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(user),
-      }).then(async (r) => {
-        if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error || 'تعذر حفظ العميل');
-      })));
-    } catch (error) {
-      notify(error instanceof Error ? error.message : 'تعذر حفظ العملاء', true);
-    }
-  };
-
-  const persistTopups = async (next: Topup[]) => {
-    const previous = topups;
-    const changed = next.filter((t) => {
-      const oldTopup = previous.find((p) => p.id === t.id);
-      return !oldTopup || JSON.stringify(oldTopup) !== JSON.stringify(t);
-    });
-    setTopups(next);
-    write(KEY.topups, next);
-    try {
-      await Promise.all(changed.map(async (topup) => {
-        const oldTopup = previous.find((p) => p.id === topup.id);
-        const response = await fetch(oldTopup ? `/api/topups/${encodeURIComponent(topup.id)}` : '/api/topups', {
-          method: oldTopup ? 'PUT' : 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(localStorage.getItem(KEY.admin) === '1' ? { 'X-Admin-Key': ADMIN_API_KEY } : {}),
-          },
-          body: JSON.stringify(topup),
-        });
-        if (!response.ok) {
-          const data = await response.json().catch(() => ({}));
-          throw new Error(data?.error || 'تعذر حفظ طلب الشحن');
-        }
-      }));
-    } catch (error) {
-      notify(error instanceof Error ? error.message : 'تعذر حفظ طلبات الشحن', true);
-    }
-  };
-
-  const persistComplaints = async (next: Complaint[]) => {
-    const previous = complaints;
-    const changed = next.filter((c) => {
-      const oldComplaint = previous.find((p) => p.id === c.id);
-      return !oldComplaint || JSON.stringify(oldComplaint) !== JSON.stringify(c);
-    });
-    setComplaints(next);
-    write(KEY.complaints, next);
-    try {
-      await Promise.all(changed.map(async (complaint) => {
-        const oldComplaint = previous.find((p) => p.id === complaint.id);
-        const response = await fetch(oldComplaint ? `/api/complaints/${encodeURIComponent(complaint.id)}` : '/api/complaints', {
-          method: oldComplaint ? 'PUT' : 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(localStorage.getItem(KEY.admin) === '1' ? { 'X-Admin-Key': ADMIN_API_KEY } : {}),
-          },
-          body: JSON.stringify(complaint),
-        });
-        if (!response.ok) {
-          const data = await response.json().catch(() => ({}));
-          throw new Error(data?.error || 'تعذر حفظ الشكوى');
-        }
-      }));
-    } catch (error) {
-      notify(error instanceof Error ? error.message : 'تعذر حفظ الشكاوى', true);
-    }
-  };
-
-  const hydrateRemote = async () => {
-    const remote = await fetchRemoteStore();
-    if (!remote) return;
-    setCategories(remote.categories);
-    setProducts(remote.products);
-    setSettings(remote.settings);
-    write(KEY.categories, remote.categories);
-    write(KEY.products, remote.products);
-    write(KEY.settings, remote.settings);
-    if (remote.users) {
-      setUsers(remote.users);
-      write(KEY.users, remote.users);
-      if (currentUser?.username) {
-        const remoteCurrentUser = remote.users.find((user) => user.username === currentUser.username);
-        if (remoteCurrentUser) {
-          setCurrentUser(remoteCurrentUser);
-          write(KEY.current, remoteCurrentUser);
-        }
-      }
-    }
-    if (remote.topups) { setTopups(remote.topups); write(KEY.topups, remote.topups); }
-    if (remote.complaints) { setComplaints(remote.complaints); write(KEY.complaints, remote.complaints); }
-  };
-
   useEffect(() => {
     let alive = true;
-    const loadOrders = async () => {
-      const admin = localStorage.getItem(KEY.admin) === '1';
-      const remoteOrders = await fetchRemoteOrders(currentUser?.username, admin);
-      if (!alive || !remoteOrders.length) return;
-      const sorted = remoteOrders.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-      setOrders(sorted);
-      write(KEY.orders, sorted);
-    };
-    loadOrders();
-    const timer = window.setInterval(loadOrders, 5000);
-    return () => { alive = false; window.clearInterval(timer); };
-  }, [currentUser?.username]);
-
-  useEffect(() => {
-    let alive = true;
-    const load = async () => { if (alive) await hydrateRemote(); };
-    load();
-    const timer = window.setInterval(() => { if (alive) load(); }, 5000);
-    return () => { alive = false; window.clearInterval(timer); };
-  }, [currentUser?.username]);
-
+    fetchRemoteStore().then((remote) => {
+      if (!alive || !remote) return;
+      setCategories(remote.categories);
+      setProducts(remote.products);
+      setSettings(remote.settings);
+      write(KEY.categories, remote.categories);
+      write(KEY.products, remote.products);
+      write(KEY.settings, remote.settings);
+    });
+    return () => { alive = false; };
+  }, []);
   const saveStore = async (nextCategories: Category[] = categories, nextProducts: Product[] = products, nextSettings: Record<string, string> = settings) => {
     const ok = await saveRemoteStore({ categories: nextCategories, products: nextProducts, settings: nextSettings });
     if (!ok) throw new Error('تعذر حفظ التغييرات على الخادم');
@@ -424,7 +292,6 @@ function App() {
     write(KEY.products, nextProducts);
     write(KEY.settings, nextSettings);
   };
-
   useEffect(() => { document.documentElement.classList.toggle('dark', dark); write(KEY.theme, dark ? 'dark' : 'light'); }, [dark]);
   const notify = (text: string, error = false) => {
     const id = Date.now(); setToasts((old) => [...old, { id, text, error }]);
@@ -433,10 +300,8 @@ function App() {
   const saveCart = (next: CartItem[]) => { setCart(next); write(KEY.cart, next); };
   const saveUser = (next: User | null) => { setCurrentUser(next); write(KEY.current, next); };
   const syncUser = (user: User) => {
-    const exists = users.some((item) => item.username === user.username);
-    const next = exists ? users.map((item) => item.username === user.username ? user : item) : [user, ...users];
-    persistUsers(next);
-    saveUser(user);
+    const next = users.map((item) => item.username === user.username ? user : item);
+    setUsers(next); write(KEY.users, next); saveUser(user);
   };
   const addToCart = (id: string, qty = 1) => {
     if (!currentUser) { notify('سجّل دخولك أولاً لإضافة الخدمة إلى السلة', true); setLocation('/login'); return; }
@@ -447,11 +312,7 @@ function App() {
   const logout = () => { saveUser(null); notify('تم تسجيل الخروج'); setLocation('/'); };
   const updateOrder = (id: string, status: string) => {
     const next = orders.map((order) => order.id === id ? { ...order, status } : order);
-    setOrders(next); write(KEY.orders, next);
-    updateRemoteOrder(id, status).then((ok) => {
-      if (!ok) notify('تم التحديث محلياً لكن تعذر مزامنة الطلب مع الخادم', true);
-      else notify('تم تحديث حالة الطلب');
-    });
+    setOrders(next); write(KEY.orders, next); notify('تم تحديث حالة الطلب');
   };
   const nav = (path: string) => { setMobileNav(false); setLocation(path); };
   return (
@@ -483,14 +344,14 @@ function App() {
           <Route path="/"><HomePage products={products} categories={categories} addToCart={addToCart} /></Route>
           <Route path="/categories"><CategoriesPage products={products} categories={categories} addToCart={addToCart} /></Route>
           <Route path="/product/:id"><ProductPage products={products} categories={categories} addToCart={addToCart} /></Route>
-           <Route path="/cart"><CartPage cart={cart} products={products} currentUser={currentUser} saveCart={saveCart} users={users} setOrders={setOrders} orders={orders} setUsers={persistUsers} saveUser={saveUser} notify={notify} /></Route>
-          <Route path="/wallet"><WalletPage currentUser={currentUser} users={users} setUsers={persistUsers} saveUser={saveUser} topups={topups} setTopups={persistTopups} notify={notify} walletCode={settings.walletCode} /></Route>
+           <Route path="/cart"><CartPage cart={cart} products={products} currentUser={currentUser} saveCart={saveCart} users={users} setOrders={setOrders} orders={orders} setUsers={setUsers} saveUser={saveUser} notify={notify} /></Route>
+          <Route path="/wallet"><WalletPage currentUser={currentUser} users={users} setUsers={setUsers} saveUser={saveUser} topups={topups} setTopups={setTopups} notify={notify} walletCode={settings.walletCode} /></Route>
           <Route path="/orders"><OrdersPage currentUser={currentUser} orders={orders} /></Route>
-          <Route path="/login"><LoginPage users={users} setUsers={persistUsers} saveUser={saveUser} notify={notify} /></Route>
+          <Route path="/login"><LoginPage users={users} setUsers={setUsers} saveUser={saveUser} notify={notify} /></Route>
           <Route path="/about"><AboutPage settings={settings} /></Route>
-           <Route path="/complaints"><ComplaintsPage currentUser={currentUser} complaints={complaints} setComplaints={persistComplaints} notify={notify} /></Route>
-           <Route path="/admin"><AdminPage categories={categories} products={products} setCategories={setCategories} setProducts={setProducts} users={users} setUsers={persistUsers} orders={orders} updateOrder={updateOrder} topups={topups} setTopups={persistTopups} complaints={complaints} setComplaints={persistComplaints} settings={settings} setSettings={setSettings} notify={notify} saveStore={saveStore} /></Route>
-          <Route path="/admin/"><AdminPage categories={categories} products={products} setCategories={setCategories} setProducts={setProducts} users={users} setUsers={persistUsers} orders={orders} updateOrder={updateOrder} topups={topups} setTopups={persistTopups} complaints={complaints} setComplaints={persistComplaints} settings={settings} setSettings={setSettings} notify={notify} saveStore={saveStore} /></Route>
+           <Route path="/complaints"><ComplaintsPage currentUser={currentUser} complaints={complaints} setComplaints={setComplaints} notify={notify} /></Route>
+           <Route path="/admin"><AdminPage categories={categories} products={products} setCategories={setCategories} setProducts={setProducts} users={users} setUsers={setUsers} orders={orders} updateOrder={updateOrder} topups={topups} setTopups={setTopups} complaints={complaints} setComplaints={setComplaints} settings={settings} setSettings={setSettings} notify={notify} saveStore={saveStore} /></Route>
+          <Route path="/admin/"><AdminPage categories={categories} products={products} setCategories={setCategories} setProducts={setProducts} users={users} setUsers={setUsers} orders={orders} updateOrder={updateOrder} topups={topups} setTopups={setTopups} complaints={complaints} setComplaints={setComplaints} settings={settings} setSettings={setSettings} notify={notify} saveStore={saveStore} /></Route>
           <Route component={NotFound} />
         </Switch>
       </main>
@@ -536,7 +397,7 @@ function CartPage({ cart, products, currentUser, saveCart, users, setOrders, ord
   const [, setLocation] = useLocation(); const [form, setForm] = useState<Requirement & { whatsapp: string; payment: string }>({ whatsapp: '', payment: 'wallet', platform: '', accountId: '', targetLink: '', quantity: '', notes: '' });
   const items = cart.map((item) => ({ ...item, product: products.find((product) => product.id === item.productId) })).filter((item): item is CartItem & { product: Product } => Boolean(item.product));
   const total = items.reduce((sum, item) => sum + lineTotal(item.product, item.qty), 0);
-  const submit = async (event: FormEvent) => {
+  const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!currentUser) { notify('تحتاج إلى تسجيل الدخول قبل تأكيد الطلب', true); setLocation('/login'); return; }
     const primaryType = items[0]?.product.type || 'other'; const needed = serviceFields(primaryType);
@@ -544,11 +405,8 @@ function CartPage({ cart, products, currentUser, saveCart, users, setOrders, ord
     if (form.payment === 'wallet' && currentUser.balance < total) { notify('الرصيد غير كافٍ، اشحن المحفظة أولاً', true); return; }
     const requirements: Requirement = { platform: form.platform, accountId: form.accountId, username: form.accountId, targetLink: form.targetLink, quantity: form.quantity, notes: form.notes };
     const order: Order = { id: uid('ORD'), date: new Date().toISOString(), username: currentUser.username, email: currentUser.email, whatsapp: form.whatsapp, items: items.map((item) => ({ productId: item.product.id, name: item.product.name, type: item.product.type, qty: item.qty, price: item.product.price, requirements })), total, status: 'pending', paymentMethod: form.payment === 'wallet' ? 'المحفظة' : 'شام كاش — مراجعة', requirements };
-    const nextOrders = [order, ...orders];
-    setOrders(nextOrders); write(KEY.orders, nextOrders);
-    const remoteSaved = await createRemoteOrder(order);
-    if (!remoteSaved) { notify('تعذر إرسال الطلب إلى الإدارة، حاول مرة أخرى', true); return; }
-    if (form.payment === 'wallet') { const updated = { ...currentUser, balance: currentUser.balance - total }; const nextUsers = users.map((user) => user.username === updated.username ? updated : user); setUsers(nextUsers); saveUser(updated); }
+    const nextOrders = [order, ...orders]; setOrders(nextOrders); write(KEY.orders, nextOrders);
+    if (form.payment === 'wallet') { const updated = { ...currentUser, balance: currentUser.balance - total }; const nextUsers = users.map((user) => user.username === updated.username ? updated : user); setUsers(nextUsers); write(KEY.users, nextUsers); saveUser(updated); }
     saveCart([]); notify('تم استلام طلبك بنجاح'); setLocation('/orders');
   };
   if (!items.length) return <div className="page-wrap section-pad"><div className="page-heading"><div><div className="eyebrow">ORDER BAG</div><h1>السلة</h1></div></div><div className="empty-state"><ShoppingCart size={32} /><h2>السلة جاهزة لشيء جيد</h2><p>أضف خدمة واحدة على الأقل، وستظهر لك متطلبات الدفع هنا.</p><Link href="/categories" className="btn btn-primary" data-testid="link-empty-cart-services">تصفح الخدمات <ArrowLeft size={15} /></Link></div></div>;
@@ -558,19 +416,10 @@ function CartPage({ cart, products, currentUser, saveCart, users, setOrders, ord
 
 function WalletPage({ currentUser, users, setUsers, saveUser, topups, setTopups, notify, walletCode }: { currentUser: User | null; users: User[]; setUsers: (items: User[]) => void; saveUser: (user: User | null) => void; topups: Topup[]; setTopups: (items: Topup[]) => void; notify: (text: string, error?: boolean) => void; walletCode?: string }) {
   const [, setLocation] = useLocation(); const [form, setForm] = useState({ txNumber: '', amount: '', currency: 'USD' });
-  const liveUser = currentUser ? (users.find((user) => user.username === currentUser.username) || currentUser) : null;
-  if (!liveUser) return <LoginPrompt title="المحفظة متاحة بعد تسجيل الدخول" />;
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!form.txNumber || Number(form.amount) <= 0) { notify('أدخل رقم العملية والمبلغ', true); return; }
-    const topup: Topup = { id: uid('TOP'), username: liveUser.username, email: liveUser.email, txNumber: form.txNumber, amount: Number(form.amount), currency: form.currency, status: 'pending', date: new Date().toISOString() };
-    const next = [topup, ...topups];
-    await setTopups(next);
-    setForm({ txNumber: '', amount: '', currency: 'USD' });
-    notify('أُرسل طلب الشحن للمراجعة');
-  };
+  if (!currentUser) return <LoginPrompt title="المحفظة متاحة بعد تسجيل الدخول" />;
+  const submit = (event: FormEvent) => { event.preventDefault(); if (!form.txNumber || Number(form.amount) <= 0) { notify('أدخل رقم العملية والمبلغ', true); return; } const topup: Topup = { id: uid('TOP'), username: currentUser.username, email: currentUser.email, txNumber: form.txNumber, amount: Number(form.amount), currency: form.currency, status: 'pending', date: new Date().toISOString() }; const next = [topup, ...topups]; setTopups(next); write(KEY.topups, next); setForm({ txNumber: '', amount: '', currency: 'USD' }); notify('أُرسل طلب الشحن للمراجعة'); };
   const code = walletCode || 'SY-IDLEB-2025-SCASH';
-  return <div className="page-wrap section-pad"><div className="page-heading"><div><div className="eyebrow">PERSONAL WALLET</div><h1>المحفظة</h1><p>رصيدك، طلبات الشحن، ومسار الدفع في مكان واحد.</p></div></div><section className="wallet-card wallet-hero"><small>الرصيد المتاح</small><h1 data-testid="text-wallet-balance">{money(liveUser.balance)}</h1><button className="btn" onClick={() => document.getElementById('topup-form')?.scrollIntoView({ behavior: 'smooth' })} data-testid="button-scroll-topup"><Plus size={16} /> شحن الرصيد</button></section><div className="wallet-grid"><section className="panel topup-box" id="topup-form"><div className="eyebrow">SHAM CASH ROUTE</div><h2 style={{ margin: '7px 0', fontSize: 19 }}>إرسال طلب شحن</h2><p style={{ color: 'hsl(var(--muted-foreground))', fontSize: 12 }}>حوّل المبلغ إلى محفظة IDLEB ثم أرسل رقم العملية.</p><div className="payment-code"><code data-testid="text-wallet-code">{code}</code><button className="btn btn-secondary btn-sm" type="button" onClick={() => { navigator.clipboard?.writeText(code); notify('تم نسخ رمز المحفظة'); }} data-testid="button-copy-wallet-code"><Copy size={13} /> نسخ</button></div><form onSubmit={submit}><div className="field"><label>رقم العملية *</label><input className="text-input" value={form.txNumber} onChange={(event) => setForm({ ...form, txNumber: event.target.value })} data-testid="input-topup-transaction" /></div><div className="form-grid"><div className="field"><label>المبلغ *</label><input className="text-input" type="number" min={1} value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} data-testid="input-topup-amount" /></div><div className="field"><label>العملة</label><select className="select-input" value={form.currency} onChange={(event) => setForm({ ...form, currency: event.target.value })} data-testid="select-topup-currency"><option value="USD">دولار USD</option><option value="SYP">ليرة سورية SYP</option></select></div></div><button className="btn btn-primary" style={{ width: '100%' }} data-testid="button-submit-topup"><Send size={15} /> إرسال للمراجعة</button></form></section><section className="panel topup-box"><div className="panel-title"><h2>سجل الشحن</h2><span>{topups.filter((item) => item.username === liveUser.username).length} طلب</span></div>{topups.filter((item) => item.username === liveUser.username).slice(0, 5).map((item) => <div className="order-meta" key={item.id} data-testid={`row-topup-${item.id}`}><span><strong>{item.txNumber}</strong></span><span>{money(item.amount)} {item.currency}</span><span className={`status ${item.status === 'approved' ? 'completed' : 'pending'}`}>{item.status === 'approved' ? 'تمت الإضافة' : 'قيد المراجعة'}</span></div>)}{!topups.some((item) => item.username === liveUser.username) && <div className="empty-state" style={{ padding: 32 }}><WalletCards size={24} /><p>لا توجد عمليات شحن بعد.</p></div>}</section></div></div>;
+  return <div className="page-wrap section-pad"><div className="page-heading"><div><div className="eyebrow">PERSONAL WALLET</div><h1>المحفظة</h1><p>رصيدك، طلبات الشحن، ومسار الدفع في مكان واحد.</p></div></div><section className="wallet-card wallet-hero"><small>الرصيد المتاح</small><h1 data-testid="text-wallet-balance">{money(currentUser.balance)}</h1><button className="btn" onClick={() => document.getElementById('topup-form')?.scrollIntoView({ behavior: 'smooth' })} data-testid="button-scroll-topup"><Plus size={16} /> شحن الرصيد</button></section><div className="wallet-grid"><section className="panel topup-box" id="topup-form"><div className="eyebrow">SHAM CASH ROUTE</div><h2 style={{ margin: '7px 0', fontSize: 19 }}>إرسال طلب شحن</h2><p style={{ color: 'hsl(var(--muted-foreground))', fontSize: 12 }}>حوّل المبلغ إلى محفظة IDLEB ثم أرسل رقم العملية.</p><div className="payment-code"><code data-testid="text-wallet-code">{code}</code><button className="btn btn-secondary btn-sm" type="button" onClick={() => { navigator.clipboard?.writeText(code); notify('تم نسخ رمز المحفظة'); }} data-testid="button-copy-wallet-code"><Copy size={13} /> نسخ</button></div><form onSubmit={submit}><div className="field"><label>رقم العملية *</label><input className="text-input" value={form.txNumber} onChange={(event) => setForm({ ...form, txNumber: event.target.value })} data-testid="input-topup-transaction" /></div><div className="form-grid"><div className="field"><label>المبلغ *</label><input className="text-input" type="number" min={1} value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} data-testid="input-topup-amount" /></div><div className="field"><label>العملة</label><select className="select-input" value={form.currency} onChange={(event) => setForm({ ...form, currency: event.target.value })} data-testid="select-topup-currency"><option value="USD">دولار USD</option><option value="SYP">ليرة سورية SYP</option></select></div></div><button className="btn btn-primary" style={{ width: '100%' }} data-testid="button-submit-topup"><Send size={15} /> إرسال للمراجعة</button></form></section><section className="panel topup-box"><div className="panel-title"><h2>سجل الشحن</h2><span>{topups.filter((item) => item.username === currentUser.username).length} طلب</span></div>{topups.filter((item) => item.username === currentUser.username).slice(0, 5).map((item) => <div className="order-meta" key={item.id} data-testid={`row-topup-${item.id}`}><span><strong>{item.txNumber}</strong></span><span>{money(item.amount)} {item.currency}</span><span className={`status ${item.status === 'approved' ? 'completed' : 'pending'}`}>{item.status === 'approved' ? 'تمت الإضافة' : 'قيد المراجعة'}</span></div>)}{!topups.some((item) => item.username === currentUser.username) && <div className="empty-state" style={{ padding: 32 }}><WalletCards size={24} /><p>لا توجد عمليات شحن بعد.</p></div>}</section></div></div>;
 }
 
 function LoginPrompt({ title }: { title: string }) { return <div className="page-wrap auth-layout"><div className="empty-state"><LockKeyhole size={30} /><h2>{title}</h2><Link href="/login" className="btn btn-primary" data-testid="link-login-required">تسجيل الدخول</Link></div></div>; }
@@ -727,11 +576,11 @@ function ComplaintsPage({ currentUser, complaints, setComplaints, notify }: { cu
   const [form, setForm] = useState({ subject: '', message: '' });
   if (!currentUser) return <LoginPrompt title="سجّل الدخول لإرسال شكوى" />;
   const own = complaints.filter((item) => item.username === currentUser.username);
-  return <div className="page-wrap section-pad"><div className="page-heading"><div><div className="eyebrow">CUSTOMER CARE</div><h1>الشكاوى</h1><p>أرسل المشكلة وسيتابعها فريق الإدارة.</p></div></div><section className="panel" style={{ maxWidth: 720 }}><form onSubmit={async (event) => { event.preventDefault(); if (!form.subject || !form.message) { notify('أكمل عنوان الشكوى وتفاصيلها', true); return; } const next = [{ id: uid('CMP'), username: currentUser.username, email: currentUser.email, subject: form.subject, message: form.message, status: 'open' as const, date: new Date().toISOString() }, ...complaints]; await setComplaints(next); setForm({ subject: '', message: '' }); notify('تم إرسال الشكوى'); }}><div className="field"><label>عنوان الشكوى</label><input className="text-input" value={form.subject} onChange={(event) => setForm({ ...form, subject: event.target.value })} /></div><div className="field"><label>التفاصيل</label><textarea className="textarea-input" rows={5} value={form.message} onChange={(event) => setForm({ ...form, message: event.target.value })} /></div><button className="btn btn-primary"><Send size={15} /> إرسال الشكوى</button></form></section>{own.map((item) => <article className="panel order-card" key={item.id}><div className="order-card-head"><div><h3>{item.subject}</h3><p>{dateLabel(item.date)}</p></div><span className={`status ${item.status === 'open' ? 'pending' : 'completed'}`}>{item.status === 'open' ? 'مفتوحة' : 'تم الحل'}</span></div><p>{item.message}</p></article>)}</div>;
+  return <div className="page-wrap section-pad"><div className="page-heading"><div><div className="eyebrow">CUSTOMER CARE</div><h1>الشكاوى</h1><p>أرسل المشكلة وسيتابعها فريق الإدارة.</p></div></div><section className="panel" style={{ maxWidth: 720 }}><form onSubmit={(event) => { event.preventDefault(); if (!form.subject || !form.message) { notify('أكمل عنوان الشكوى وتفاصيلها', true); return; } const next = [{ id: uid('CMP'), username: currentUser.username, email: currentUser.email, subject: form.subject, message: form.message, status: 'open' as const, date: new Date().toISOString() }, ...complaints]; setComplaints(next); write(KEY.complaints, next); setForm({ subject: '', message: '' }); notify('تم إرسال الشكوى'); }}><div className="field"><label>عنوان الشكوى</label><input className="text-input" value={form.subject} onChange={(event) => setForm({ ...form, subject: event.target.value })} /></div><div className="field"><label>التفاصيل</label><textarea className="textarea-input" rows={5} value={form.message} onChange={(event) => setForm({ ...form, message: event.target.value })} /></div><button className="btn btn-primary"><Send size={15} /> إرسال الشكوى</button></form></section>{own.map((item) => <article className="panel order-card" key={item.id}><div className="order-card-head"><div><h3>{item.subject}</h3><p>{dateLabel(item.date)}</p></div><span className={`status ${item.status === 'open' ? 'pending' : 'completed'}`}>{item.status === 'open' ? 'مفتوحة' : 'تم الحل'}</span></div><p>{item.message}</p></article>)}</div>;
 }
 
 function AdminComplaints({ complaints, setComplaints, notify }: { complaints: Complaint[]; setComplaints: (items: Complaint[]) => void; notify: (text: string, error?: boolean) => void }) {
-  return <div className="admin-order-list">{complaints.length ? complaints.map((item) => <article className="admin-order-card" key={item.id}><div className="admin-order-top"><div><div className="admin-order-id">{item.id}</div><div className="admin-order-name">{item.subject}</div><div className="admin-order-date">{item.username} · {dateLabel(item.date)}</div></div><span className={`status ${item.status === 'open' ? 'pending' : 'completed'}`}>{item.status === 'open' ? 'مفتوحة' : 'تم الحل'}</span></div><div className="requirements-box"><p>{item.message}</p><small>{item.email}</small></div><button className="btn btn-secondary btn-sm" onClick={() => { const next = complaints.map((entry) => entry.id === item.id ? { ...entry, status: entry.status === 'open' ? 'resolved' as const : 'open' as const } : entry); setComplaints(next); notify('تم تحديث الشكوى'); }}>{item.status === 'open' ? 'تحديد كمحلولة' : 'إعادة فتح'}</button></article>) : <div className="empty-state"><MessageCircle size={28} /><h2>لا توجد شكاوى</h2></div>}</div>;
+  return <div className="admin-order-list">{complaints.length ? complaints.map((item) => <article className="admin-order-card" key={item.id}><div className="admin-order-top"><div><div className="admin-order-id">{item.id}</div><div className="admin-order-name">{item.subject}</div><div className="admin-order-date">{item.username} · {dateLabel(item.date)}</div></div><span className={`status ${item.status === 'open' ? 'pending' : 'completed'}`}>{item.status === 'open' ? 'مفتوحة' : 'تم الحل'}</span></div><div className="requirements-box"><p>{item.message}</p><small>{item.email}</small></div><button className="btn btn-secondary btn-sm" onClick={() => { const next = complaints.map((entry) => entry.id === item.id ? { ...entry, status: entry.status === 'open' ? 'resolved' as const : 'open' as const } : entry); setComplaints(next); write(KEY.complaints, next); notify('تم تحديث الشكوى'); }}>{item.status === 'open' ? 'تحديد كمحلولة' : 'إعادة فتح'}</button></article>) : <div className="empty-state"><MessageCircle size={28} /><h2>لا توجد شكاوى</h2></div>}</div>;
 }
 
 function AdminPage(props: { categories: Category[]; products: Product[]; setCategories: (items: Category[]) => void; setProducts: (items: Product[]) => void; users: User[]; setUsers: (items: User[]) => void; orders: Order[]; updateOrder: (id: string, status: string) => void; topups: Topup[]; setTopups: (items: Topup[]) => void; complaints: Complaint[]; setComplaints: (items: Complaint[]) => void; settings: Record<string, string>; setSettings: (settings: Record<string, string>) => void; notify: (text: string, error?: boolean) => void; saveStore: (categories?: Category[], products?: Product[], settings?: Record<string, string>) => Promise<void> }) {
@@ -800,32 +649,12 @@ function AdminCatalog({ products, categories, setProducts, setCategories, notify
 function AdminCustomers({ users, setUsers, notify }: { users: User[]; setUsers: (items: User[]) => void; notify: (text: string, error?: boolean) => void }) {
   const [query, setQuery] = useState(''); const [selected, setSelected] = useState(''); const [amount, setAmount] = useState('');
   const visible = users.filter((user) => `${user.username} ${user.email}`.toLowerCase().includes(query.toLowerCase()));
-  const addBalance = () => { const user = users.find((item) => item.username === selected); if (!user || Number(amount) <= 0) { notify('اختر عميلاً وأدخل مبلغاً صالحاً', true); return; } const next = users.map((item) => item.username === selected ? { ...item, balance: item.balance + Number(amount) } : item); setUsers(next); setAmount(''); notify('تمت إضافة الرصيد'); };
+  const addBalance = () => { const user = users.find((item) => item.username === selected); if (!user || Number(amount) <= 0) { notify('اختر عميلاً وأدخل مبلغاً صالحاً', true); return; } const next = users.map((item) => item.username === selected ? { ...item, balance: item.balance + Number(amount) } : item); setUsers(next); write(KEY.users, next); setAmount(''); notify('تمت إضافة الرصيد'); };
   return <><div className="panel" style={{ marginBottom: 14 }}><div className="panel-title"><h2>إضافة رصيد يدوي</h2><span>للمطابقة أو التعويض</span></div><div className="form-grid"><div className="field"><label>العميل</label><select className="select-input" value={selected} onChange={(event) => setSelected(event.target.value)} data-testid="select-customer-balance"><option value="">اختر عميلاً</option>{users.map((user) => <option value={user.username} key={user.username}>{user.username} — {user.email}</option>)}</select></div><div className="field"><label>المبلغ</label><input className="text-input" type="number" min={1} value={amount} onChange={(event) => setAmount(event.target.value)} data-testid="input-customer-balance" /></div></div><button className="btn btn-primary" onClick={addBalance} data-testid="button-add-customer-balance"><Plus size={15} /> إضافة الرصيد</button></div><div className="admin-toolbar"><div className="search-bar"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="ابحث عن عميل..." data-testid="input-customer-search" /></div></div><div className="panel admin-table-wrap"><table className="admin-table"><thead><tr><th>المستخدم</th><th>البريد</th><th>الرصيد</th><th>الحالة</th><th>الانضمام</th></tr></thead><tbody>{visible.map((user) => <tr key={user.username} data-testid={`row-customer-${user.username}`}><td><strong>{user.username}</strong></td><td dir="ltr">{user.email}</td><td><strong style={{ color: 'hsl(var(--primary))' }}>{money(user.balance)}</strong></td><td><span className="status completed">مفعل</span></td><td>{user.createdAt ? dateLabel(user.createdAt) : '—'}</td></tr>)}</tbody></table>{!visible.length && <div className="empty-state" style={{ border: 0 }}><Users size={25} /><p>لا يوجد عملاء مطابقون.</p></div>}</div></>;
 }
 
-function AdminTopups({ topups, setTopups, users, setUsers, notify }: { topups: Topup[]; setTopups: (items: Topup[]) => void | Promise<void>; users: User[]; setUsers: (items: User[]) => void; notify: (text: string, error?: boolean) => void }) {
-  const update = async (topup: Topup, status: string) => {
-    try {
-      const next = topups.map((item) => item.id === topup.id ? { ...item, status } : item);
-      await Promise.resolve(setTopups(next));
-
-      // IMPORTANT: the Worker performs the wallet credit atomically.
-      // Do not add the amount again from the browser; doing so can race with
-      // the Worker and double-credit the customer.
-      if (status === 'approved' && topup.status !== 'approved') {
-        const remote = await fetchRemoteStore();
-        if (remote?.users) {
-          setUsers(remote.users);
-          write(KEY.users, remote.users);
-        }
-      }
-
-      notify(status === 'approved' ? 'تم قبول الشحن وإضافة الرصيد فعلياً' : 'تم تحديث طلب الشحن');
-    } catch (error) {
-      notify(error instanceof Error ? error.message : 'تعذر تحديث طلب الشحن', true);
-    }
-  };
+function AdminTopups({ topups, setTopups, users, setUsers, notify }: { topups: Topup[]; setTopups: (items: Topup[]) => void; users: User[]; setUsers: (items: User[]) => void; notify: (text: string, error?: boolean) => void }) {
+  const update = (topup: Topup, status: string) => { const next = topups.map((item) => item.id === topup.id ? { ...item, status } : item); setTopups(next); write(KEY.topups, next); if (status === 'approved' && topup.status !== 'approved') { const nextUsers = users.map((user) => user.username === topup.username ? { ...user, balance: user.balance + topup.amount } : user); setUsers(nextUsers); write(KEY.users, nextUsers); } notify(status === 'approved' ? 'تم قبول الشحن وإضافة الرصيد' : 'تم تحديث طلب الشحن'); };
   return <div className="panel admin-table-wrap"><table className="admin-table"><thead><tr><th>المستخدم</th><th>رقم العملية</th><th>المبلغ</th><th>العملة</th><th>التاريخ</th><th>الحالة والإجراء</th></tr></thead><tbody>{topups.map((topup) => <tr key={topup.id} data-testid={`row-admin-topup-${topup.id}`}><td><strong>{topup.username}</strong><br /><span style={{ color: 'hsl(var(--muted-foreground))', fontSize: 10 }}>{topup.email}</span></td><td dir="ltr">{topup.txNumber}</td><td>{money(topup.amount)}</td><td>{topup.currency}</td><td>{dateLabel(topup.date)}</td><td><div className="admin-actions"><span className={`status ${topup.status === 'approved' ? 'completed' : 'pending'}`}>{topup.status === 'approved' ? 'مقبول' : 'قيد المراجعة'}</span>{topup.status !== 'approved' && <button className="btn btn-primary btn-sm" onClick={() => update(topup, 'approved')} data-testid={`button-approve-topup-${topup.id}`}><Check size={13} /> قبول</button>}<button className="icon-btn" onClick={() => update(topup, 'rejected')} data-testid={`button-reject-topup-${topup.id}`}><X size={14} /></button></div></td></tr>)}</tbody></table>{!topups.length && <div className="empty-state" style={{ border: 0 }}><WalletCards size={25} /><p>لا توجد طلبات شحن.</p></div>}</div>;
 }
 
