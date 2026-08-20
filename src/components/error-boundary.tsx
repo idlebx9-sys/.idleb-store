@@ -1,4 +1,65 @@
-import React from 'react';
-export class ErrorBoundary extends React.Component<{children:React.ReactNode},{hasError:boolean}>{state={hasError:false};static getDerivedStateFromError(){return {hasError:true}};componentDidCatch(e:unknown){console.error(e)};render(){return this.state.hasError?<div style={{padding:24,fontFamily:'sans-serif'}}>حدث خطأ غير متوقع. أعد تحميل الصفحة.</div>:this.props.children}}</nEOF
-rm -rf node_modules package-lock.json
-npm install --no-audit --no-fund
+import React from "react";
+
+type ErrorBoundaryProps = {
+  children: React.ReactNode;
+};
+
+type ErrorBoundaryState = {
+  hasError: boolean;
+};
+
+export class ErrorBoundary extends React.Component<
+  ErrorBoundaryProps,
+  ErrorBoundaryState
+> {
+  public state: ErrorBoundaryState = {
+    hasError: false,
+  };
+
+  public static getDerivedStateFromError(): ErrorBoundaryState {
+    return {
+      hasError: true,
+    };
+  }
+
+  public componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error("Application error:", error, errorInfo);
+  }
+
+  public render() {
+    if (this.state.hasError) {
+      return (
+        <div
+          style={{
+            minHeight: "100vh",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "20px",
+            textAlign: "center",
+          }}
+        >
+          <div>
+            <h1>حدث خطأ غير متوقع</h1>
+
+            <p>
+              يرجى تحديث الصفحة والمحاولة مرة أخرى.
+            </p>
+
+            <button
+              onClick={() => window.location.reload()}
+              style={{
+                padding: "12px 20px",
+                cursor: "pointer",
+              }}
+            >
+              تحديث الصفحة
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
