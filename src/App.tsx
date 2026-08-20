@@ -402,14 +402,96 @@ function NavLink({ href, label, icon, onClick }: { href: string; label: string; 
   return <Link href={href} className={`nav-link ${location === href ? 'active' : ''}`} onClick={onClick} data-testid={`link-nav-${href.replace('/', '') || 'home'}`}>{icon}{label}</Link>;
 }
 
-function HomePage({ products, categories, addToCart }: { products: Product[]; categories: Category[]; addToCart: (id: string) => void }) {
-  const best = [...products].filter((p) => p.active).sort((a, b) => (b.sales || 0) - (a.sales || 0)).slice(0, 6);
-  return <div className="page-wrap">
-    <section className="hero" data-testid="section-hero"><div className="hero-copy"><div className="eyebrow">IDLEB / 2026 OPERATIONS DESK</div><h1>خدمات رقمية<br /><span>تنجزها بثقة.</span></h1><p>متجر سوري متخصص في التبنيد، فك الباند، الرشق، وشحن الألعاب. اختر خدمتك، أرسل التفاصيل، وتابع التنفيذ من مكان واحد.</p><div className="hero-actions"><Link href="/categories" className="btn btn-primary" data-testid="link-hero-services">تصفح الخدمات <ArrowLeft size={16} /></Link><Link href="/orders" className="btn btn-secondary" data-testid="link-hero-orders">تتبع طلباً <TicketCheck size={16} /></Link></div></div><div className="hero-orbit" aria-hidden="true" /><span className="hero-index">01 — TRUSTED SERVICE ROUTE</span></section>
-    <section className="section-pad"><div className="section-head"><div><div className="eyebrow">DIRECTORY</div><h2>ابدأ من القسم الصحيح</h2><p>مسارات مرتبة للخدمات الأكثر طلباً.</p></div><Link href="/categories" className="btn btn-quiet" data-testid="link-home-all-categories">كل الأقسام <ArrowLeft size={14} /></Link></div><div className="category-grid">{categories.map((category, index) => <Link href={`/categories?category=${category.id}`} className="category-tile" key={category.id} data-testid={`card-category-${category.id}`}><span className="category-number">0{index + 1}</span>{category.image ? <img src={category.image} alt={category.name} style={{ width: '100%', height: 88, objectFit: 'cover', borderRadius: 12, marginBottom: 8 }} /> : <span className="category-icon">{category.id === 'cat4' ? <Gamepad2 size={19} /> : category.id === 'cat2' ? <LockKeyhole size={19} /> : category.id === 'cat1' ? <ShieldCheck size={19} /> : <TrendingUp size={19} />}</span>}<strong>{category.name}</strong><span>{products.filter((product) => product.categoryId === category.id && product.active).length} خدمات متاحة</span></Link>)}</div></section>
-    <section className="section-pad"><div className="section-head"><div><div className="eyebrow">MOST REQUESTED</div><h2>الخدمات التي تتحرك بسرعة</h2><p>اختيارات عملية من سجل الطلبات المحلي.</p></div><Link href="/categories" className="btn btn-quiet" data-testid="link-home-all-products">عرض الكل <ArrowLeft size={14} /></Link></div><div className="product-grid">{best.map((product) => <ProductCard product={product} key={product.id} addToCart={addToCart} />)}</div></section>
-    <section className="section-pad"><div className="panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 20, flexWrap: 'wrap', padding: 25 }}><div><div className="eyebrow">NEED A HAND?</div><h2 style={{ margin: '7px 0', fontSize: 22 }}>لا تعرف أي خدمة تناسبك؟</h2><p style={{ margin: 0, color: 'hsl(var(--muted-foreground))', fontSize: 13 }}>أرسل تفاصيل الحالة للإدارة، وسنوجهك إلى المسار الأقصر.</p></div><Link className="btn btn-secondary" href="/complaints" data-testid="link-support"><MessageCircle size={16} /> تواصل مع الدعم</Link></div></section>
-  </div>;
+function HomePage({ products, categories }: { products: Product[]; categories: Category[]; addToCart: (id: string) => void }) {
+  return (
+    <div className="page-wrap">
+      <section className="hero" data-testid="section-hero">
+        <div className="hero-copy">
+          <div className="eyebrow">IDLEB / 2026 OPERATIONS DESK</div>
+          <h1>خدمات رقمية<br /><span>تنجزها بثقة.</span></h1>
+          <p>متجر سوري متخصص في الخدمات الرقمية. اختر القسم المناسب، ثم اختر الخدمة التي تحتاجها وأرسل تفاصيل طلبك بسهولة.</p>
+
+          <div className="hero-actions">
+            <Link href="/categories" className="btn btn-primary">
+              تصفح الخدمات <ArrowLeft size={16} />
+            </Link>
+
+            <Link href="/orders" className="btn btn-secondary">
+              طلباتي <TicketCheck size={16} />
+            </Link>
+          </div>
+        </div>
+
+        <div className="hero-orbit" aria-hidden="true" />
+        <span className="hero-index">01 — TRUSTED SERVICE ROUTE</span>
+      </section>
+
+      <section className="section-pad home-categories-section">
+        <div className="section-head">
+          <div>
+            <div className="eyebrow">DIRECTORY</div>
+            <h2>اختر القسم المناسب</h2>
+            <p>جميع خدمات المتجر مرتبة ضمن أقسام واضحة.</p>
+          </div>
+        </div>
+
+        <div className="category-grid home-category-grid">
+          {categories.map((category, index) => (
+            <Link
+              href={`/categories?category=${category.id}`}
+              className="category-tile"
+              key={category.id}
+            >
+              <span className="category-number">
+                {String(index + 1).padStart(2, '0')}
+              </span>
+
+              {category.image ? (
+                <img
+                  src={category.image}
+                  alt={category.name}
+                  className="category-image"
+                />
+              ) : (
+                <span className="category-icon">
+                  {category.id === 'cat4' ? <Gamepad2 size={22} /> :
+                   category.id === 'cat2' ? <LockKeyhole size={22} /> :
+                   category.id === 'cat1' ? <ShieldCheck size={22} /> :
+                   <TrendingUp size={22} />}
+                </span>
+              )}
+
+              <strong>{category.name}</strong>
+
+              <span className="category-services-count">
+                {products.filter(
+                  (product) =>
+                    product.categoryId === category.id &&
+                    product.active
+                ).length} خدمات متاحة
+              </span>
+            </Link>
+          ))}
+        </div>
+      </section>
+
+      <section className="section-pad">
+        <div className="panel home-support-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 20, flexWrap: 'wrap', padding: 25 }}>
+          <div>
+            <div className="eyebrow">NEED A HAND?</div>
+            <h2 style={{ margin: '7px 0', fontSize: 22 }}>تحتاج مساعدة؟</h2>
+            <p style={{ margin: 0, color: 'hsl(var(--muted-foreground))', fontSize: 13 }}>
+              أرسل تفاصيل المشكلة للإدارة وسنتابع معك.
+            </p>
+          </div>
+
+          <Link className="btn btn-secondary" href="/complaints">
+            <MessageCircle size={16} /> تواصل مع الدعم
+          </Link>
+        </div>
+      </section>
+    </div>
+  );
 }
 
 function ProductCard({ product, addToCart }: { product: Product; addToCart: (id: string) => void }) {
