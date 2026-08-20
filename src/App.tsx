@@ -168,6 +168,7 @@ async function sendEmailOtp(email: string, code: string, username: string) {
     } catch {
       // Keep the HTTP status when the response body cannot be read.
     }
+    console.error('[IDLEB OTP ERROR]', details);
     throw new Error(`EMAIL_SEND_FAILED: ${details}`);
   }
 }
@@ -298,7 +299,42 @@ function App() {
     window.setTimeout(() => setToasts((old) => old.filter((toast) => toast.id !== id)), 3400);
   };
   const saveCart = (next: CartItem[]) => { setCart(next); write(KEY.cart, next); };
-  const saveUser = (next: User | null) => { setCurrentUser(next); write(KEY.current, next); };
+  const saveUser = (next: User | null) => {
+    setCurrentUser(next);
+    write(KEY.current, next);
+  };
+
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const refreshCurrentUser = async () => {
+      try {
+        const response = await fetch('/api/data/users', { cache: 'no-store' });
+        const data = await response.json();
+
+        if (!Array.isArray(data.items)) return;
+
+        const freshUser = data.items.find(
+          (user: User) =>
+            user.username === currentUser.username ||
+            user.email === currentUser.email
+        );
+
+        if (freshUser) {
+          setCurrentUser(freshUser);
+          localStorage.setItem(KEY.current, JSON.stringify(freshUser));
+        }
+      } catch {
+        // تجاهل خطأ الشبكة المؤقت
+      }
+    };
+
+    refreshCurrentUser();
+
+    const interval = window.setInterval(refreshCurrentUser, 5000);
+
+    return () => window.clearInterval(interval);
+  }, [currentUser?.username, currentUser?.email]);
   const syncUser = (user: User) => {
     const next = users.map((item) => item.username === user.username ? user : item);
     setUsers(next); write(KEY.users, next); saveUser(user);
@@ -654,7 +690,25 @@ function AdminCustomers({ users, setUsers, notify }: { users: User[]; setUsers: 
 }
 
 function AdminTopups({ topups, setTopups, users, setUsers, notify }: { topups: Topup[]; setTopups: (items: Topup[]) => void; users: User[]; setUsers: (items: User[]) => void; notify: (text: string, error?: boolean) => void }) {
-  const update = (topup: Topup, status: string) => { const next = topups.map((item) => item.id === topup.id ? { ...item, status } : item); setTopups(next); write(KEY.topups, next); if (status === 'approved' && topup.status !== 'approved') { const nextUsers = users.map((user) => user.username === topup.username ? { ...user, balance: user.balance + topup.amount } : user); setUsers(nextUsers); write(KEY.users, nextUsers); } notify(status === 'approved' ? 'تم قبول الشحن وإضافة الرصيد' : 'تم تحديث طلب الشحن'); };
+  const update = (topup: Topup, status: string) => { const next = topups.map((item) => item.id === topup.id ? { ...item, status } : item); setTopups(next); write(KEY.topups, next); if (status === 'approved' && topup.status !== 'approved') {
+      const nextUsers = users.map((user) =>
+        user.username === topup.username
+          ? { ...user, balance: Number(user.balance || 0) + Number(topup.amount || 0) }
+          : user
+      );
+      setUsers(nextUsers);
+      write(KEY.users, nextUsers);
+
+      fetch('/api/data/users', { cache: 'no-store' })
+        .then((response) => response.json())
+        .then((data) => {
+          if (Array.isArray(data.items)) {
+            setUsers(data.items);
+            localStorage.setItem(KEY.users, JSON.stringify(data.items));
+          }
+        })
+        .catch(() => {});
+    } notify(status === 'approved' ? 'تم قبول الشحن وإضافة الرصيد' : 'تم تحديث طلب الشحن'); };
   return <div className="panel admin-table-wrap"><table className="admin-table"><thead><tr><th>المستخدم</th><th>رقم العملية</th><th>المبلغ</th><th>العملة</th><th>التاريخ</th><th>الحالة والإجراء</th></tr></thead><tbody>{topups.map((topup) => <tr key={topup.id} data-testid={`row-admin-topup-${topup.id}`}><td><strong>{topup.username}</strong><br /><span style={{ color: 'hsl(var(--muted-foreground))', fontSize: 10 }}>{topup.email}</span></td><td dir="ltr">{topup.txNumber}</td><td>{money(topup.amount)}</td><td>{topup.currency}</td><td>{dateLabel(topup.date)}</td><td><div className="admin-actions"><span className={`status ${topup.status === 'approved' ? 'completed' : 'pending'}`}>{topup.status === 'approved' ? 'مقبول' : 'قيد المراجعة'}</span>{topup.status !== 'approved' && <button className="btn btn-primary btn-sm" onClick={() => update(topup, 'approved')} data-testid={`button-approve-topup-${topup.id}`}><Check size={13} /> قبول</button>}<button className="icon-btn" onClick={() => update(topup, 'rejected')} data-testid={`button-reject-topup-${topup.id}`}><X size={14} /></button></div></td></tr>)}</tbody></table>{!topups.length && <div className="empty-state" style={{ border: 0 }}><WalletCards size={25} /><p>لا توجد طلبات شحن.</p></div>}</div>;
 }
 
